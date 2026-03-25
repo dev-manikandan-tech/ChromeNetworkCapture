@@ -104,8 +104,8 @@ public sealed class ChromeLauncher : IDisposable
             Arguments = arguments,
             UseShellExecute = false,
             CreateNoWindow = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
         };
 
         _chromeProcess = Process.Start(startInfo)

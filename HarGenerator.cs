@@ -97,7 +97,12 @@ public static class HarGenerator
                 Ssl = state.SslTime,
                 Send = state.SendTime,
                 Wait = state.WaitTime,
-                Receive = Math.Max(0, totalTime - state.SendTime - state.WaitTime),
+                Receive = Math.Max(0, totalTime
+                    - (state.BlockedTime >= 0 ? state.BlockedTime : 0)
+                    - (state.DnsTime >= 0 ? state.DnsTime : 0)
+                    - (state.ConnectTime >= 0 ? state.ConnectTime : 0)
+                    - (state.SslTime >= 0 ? state.SslTime : 0)
+                    - state.SendTime - state.WaitTime),
             },
         };
 
