@@ -6,13 +6,16 @@ namespace ChromeNetworkCapture;
 
 /// <summary>
 /// Captures network events from Chrome via CDP and stores request/response state.
+/// Uses Target.setAutoAttach with flatten mode to capture traffic from all tabs/pages.
 /// </summary>
 public sealed class NetworkCapture
 {
     private readonly CdpClient _cdpClient;
     private readonly ConcurrentDictionary<string, NetworkRequestState> _requests = new();
+    private readonly ConcurrentDictionary<string, bool> _attachedSessions = new();
     private readonly object _lock = new();
     private int _pageCount;
+    private CancellationToken _cancellationToken;
 
     public string CurrentPageRef { get; private set; } = "page_0";
     public IReadOnlyDictionary<string, NetworkRequestState> Requests => _requests;
@@ -24,28 +27,74 @@ public sealed class NetworkCapture
     }
 
     /// <summary>
-    /// Enables the Network and Page domains to start capturing traffic.
+    /// Enables auto-attach to all page targets and starts capturing network traffic.
+    /// Uses the browser-level connection with Target.setAutoAttach (flatten: true)
+    /// so that Network.enable is sent to each page session individually.
     /// </summary>
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
-        await _cdpClient.SendAsync("Network.enable", new
+        _cancellationToken = cancellationToken;
+
+        // Auto-attach to all existing and future page targets with flattened sessions
+        await _cdpClient.SendAsync("Target.setAutoAttach", new
         {
-            maxTotalBufferSize = 100 * 1024 * 1024,
-            maxResourceBufferSize = 50 * 1024 * 1024
+            autoAttach = true,
+            waitForDebuggerOnStart = false,
+            flatten = true
         }, cancellationToken);
 
-        await _cdpClient.SendAsync("Page.enable", cancellationToken: cancellationToken);
+        // Also discover existing targets to attach to pages already open
+        await _cdpClient.SendAsync("Target.setDiscoverTargets", new
+        {
+            discover = true
+        }, cancellationToken);
 
-        Logger.Info("Network capture started. Listening for traffic...");
+        Logger.Info("Network capture started. Auto-attaching to all page targets...");
     }
 
     /// <summary>
-    /// Stops capturing by disabling the Network domain.
+    /// Stops capturing by disabling the Network domain on all attached sessions.
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        await _cdpClient.SendAsync("Network.disable", cancellationToken: cancellationToken);
+        foreach (var sessionId in _attachedSessions.Keys)
+        {
+            try
+            {
+                await _cdpClient.SendAsync("Network.disable",
+                    cancellationToken: cancellationToken, sessionId: sessionId);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error disabling network on session {sessionId}: {ex.Message}");
+            }
+        }
         Logger.Info($"Network capture stopped. Captured {_requests.Count} requests.");
+    }
+
+    /// <summary>
+    /// Enables Network and Page domains on a newly attached page target session.
+    /// </summary>
+    private async Task EnableNetworkOnSessionAsync(string sessionId)
+    {
+        try
+        {
+            await _cdpClient.SendAsync("Network.enable", new
+            {
+                maxTotalBufferSize = 100 * 1024 * 1024,
+                maxResourceBufferSize = 50 * 1024 * 1024
+            }, _cancellationToken, sessionId);
+
+            await _cdpClient.SendAsync("Page.enable",
+                cancellationToken: _cancellationToken, sessionId: sessionId);
+
+            _attachedSessions.TryAdd(sessionId, true);
+            Logger.Info($"Network capture enabled on session: {sessionId}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"Failed to enable network on session {sessionId}: {ex.Message}");
+        }
     }
 
     private void OnCdpMessage(CdpResponse message)
@@ -57,6 +106,12 @@ public sealed class NetworkCapture
         {
             switch (message.Method)
             {
+                case "Target.attachedToTarget":
+                    HandleTargetAttached(message.Params.Value);
+                    break;
+                case "Target.detachedFromTarget":
+                    HandleTargetDetached(message.Params.Value);
+                    break;
                 case "Network.requestWillBeSent":
                     HandleRequestWillBeSent(message.Params.Value);
                     break;
@@ -80,6 +135,36 @@ public sealed class NetworkCapture
         catch (Exception ex)
         {
             Logger.Warning($"Error handling {message.Method}: {ex.Message}");
+        }
+    }
+
+    private void HandleTargetAttached(JsonElement parameters)
+    {
+        var sessionId = parameters.TryGetProperty("sessionId", out var sid)
+            ? sid.GetString() : null;
+
+        if (string.IsNullOrEmpty(sessionId))
+            return;
+
+        if (parameters.TryGetProperty("targetInfo", out var targetInfo) &&
+            targetInfo.TryGetProperty("type", out var type) &&
+            type.GetString() == "page")
+        {
+            var url = targetInfo.TryGetProperty("url", out var u) ? u.GetString() : "";
+            Logger.Info($"Page target attached (session: {sessionId}, url: {url})");
+            _ = EnableNetworkOnSessionAsync(sessionId);
+        }
+    }
+
+    private void HandleTargetDetached(JsonElement parameters)
+    {
+        var sessionId = parameters.TryGetProperty("sessionId", out var sid)
+            ? sid.GetString() : null;
+
+        if (!string.IsNullOrEmpty(sessionId))
+        {
+            _attachedSessions.TryRemove(sessionId, out _);
+            Logger.Info($"Target session detached: {sessionId}");
         }
     }
 

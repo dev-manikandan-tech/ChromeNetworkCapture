@@ -89,9 +89,10 @@ public sealed class CdpClient : IAsyncDisposable
 
     /// <summary>
     /// Sends a CDP command and returns the message ID.
+    /// When sessionId is provided, the command is sent to that specific target session.
     /// </summary>
     public async Task<int> SendAsync(string method, object? parameters = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string? sessionId = null)
     {
         var id = Interlocked.Increment(ref _messageId);
 
@@ -99,6 +100,10 @@ public sealed class CdpClient : IAsyncDisposable
         if (parameters != null)
         {
             message["params"] = parameters;
+        }
+        if (sessionId != null)
+        {
+            message["sessionId"] = sessionId;
         }
 
         var json = JsonSerializer.Serialize(message);
