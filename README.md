@@ -9,7 +9,7 @@ A .NET 8 tool that launches Chrome, captures all network traffic via the Chrome 
 - Generates HAR 1.2 compliant files
 - Runs silently in the background (no console window on Windows)
 - Supports attaching to an already-running Chrome instance
-- Auto-stop after a configurable duration
+- Incremental HAR file updates (flushes to disk periodically while capturing)
 - Cross-platform Chrome detection (Windows, macOS, Linux)
 - Single-file `.exe` publishing (self-contained, no .NET runtime needed)
 
@@ -44,8 +44,8 @@ ChromeNetworkCapture.exe
 # Open a specific URL
 ChromeNetworkCapture.exe -u https://example.com -o capture.har
 
-# Capture for 60 seconds then auto-save
-ChromeNetworkCapture.exe -d 60 -o session.har
+# Flush HAR to disk every 5 seconds
+ChromeNetworkCapture.exe -f 5 -o session.har
 
 # Attach to an already-running Chrome (launched with --remote-debugging-port=9222)
 ChromeNetworkCapture.exe -a -p 9222
@@ -66,7 +66,7 @@ ChromeNetworkCapture.exe -c "C:\Program Files\Google\Chrome\Application\chrome.e
 | `--output` | `-o` | Output HAR file path | `Desktop/network_capture_<timestamp>.har` |
 | `--log` | `-l` | Log file path | Same directory as output |
 | `--port` | `-p` | Chrome debugging port | `9222` |
-| `--duration` | `-d` | Auto-stop after N seconds | Runs until Chrome closes |
+| `--flush-interval` | `-f` | Seconds between HAR file updates | `10` |
 | `--attach` | `-a` | Attach to existing Chrome | Launches new Chrome |
 | `--verbose` | `-v` | Enable console output | File logging only |
 | `--help` | `-h` | Show help message | |
@@ -77,8 +77,9 @@ ChromeNetworkCapture.exe -c "C:\Program Files\Google\Chrome\Application\chrome.e
 2. **CDP Connection**: Connects to Chrome's WebSocket debugging endpoint
 3. **Network Capture**: Enables the `Network` and `Page` CDP domains to receive all network events
 4. **Event Processing**: Tracks each request through its lifecycle (request sent -> response received -> loading finished)
-5. **HAR Generation**: Converts captured network states into HAR 1.2 format with full timing data
-6. **Save**: Writes the HAR file when Chrome closes, duration expires, or the process receives a stop signal
+5. **Incremental Flush**: Every N seconds (configurable), the current capture state is saved to the HAR file on disk
+6. **HAR Generation**: Converts captured network states into HAR 1.2 format with full timing data
+7. **Final Save**: Writes the final HAR file when Chrome closes or the process receives a stop signal
 
 ## Silent Background Execution
 
@@ -86,7 +87,8 @@ The project is configured with `<OutputType>WinExe</OutputType>`, which means:
 - On Windows: No console window is shown when the `.exe` runs
 - The tool operates entirely in the background
 - All output goes to the log file (check `--log` path)
-- To stop capture: close Chrome, wait for duration, or terminate the process
+- HAR file is updated incrementally every `--flush-interval` seconds (default: 10)
+- To stop capture: close Chrome or terminate the process
 
 ## Output
 
