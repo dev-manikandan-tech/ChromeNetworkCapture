@@ -35,6 +35,9 @@ public sealed class CdpResponse
 
     [JsonPropertyName("error")]
     public JsonElement? Error { get; set; }
+
+    [JsonPropertyName("sessionId")]
+    public string? SessionId { get; set; }
 }
 
 public sealed class CdpVersionInfo

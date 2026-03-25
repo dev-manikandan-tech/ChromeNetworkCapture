@@ -13,6 +13,7 @@ Logger.Initialize(options.LogPath, enableConsole: options.Verbose);
 Logger.Info("ChromeNetworkCapture starting...");
 Logger.Info($"Output HAR: {options.OutputPath}");
 Logger.Info($"Debugging port: {options.Port}");
+Logger.Info($"Flush interval: {options.FlushInterval}s");
 
 using var cts = new CancellationTokenSource();
 
@@ -53,12 +54,8 @@ try
     var capture = new NetworkCapture(cdpClient);
     await capture.StartAsync(cts.Token);
 
-    // Set up duration-based auto-stop if specified
-    if (options.Duration.HasValue)
-    {
-        Logger.Info($"Will auto-stop after {options.Duration.Value} seconds.");
-        cts.CancelAfter(TimeSpan.FromSeconds(options.Duration.Value));
-    }
+    // Start the incremental HAR flush loop in the background
+    var flushTask = FlushLoopAsync(capture, options.OutputPath, options.FlushInterval, cts.Token);
 
     // Wait until Chrome exits or cancellation is triggered
     if (!options.AttachOnly && launcher.IsRunning)
@@ -70,7 +67,7 @@ try
         }
         catch (OperationCanceledException)
         {
-            Logger.Info("Capture period ended.");
+            Logger.Info("Capture stopped.");
         }
     }
     else
@@ -82,11 +79,15 @@ try
         }
         catch (OperationCanceledException)
         {
-            Logger.Info("Capture period ended.");
+            Logger.Info("Capture stopped.");
         }
     }
 
-    // Stop capture and generate HAR
+    // Cancel the flush loop
+    cts.Cancel();
+    try { await flushTask; } catch (OperationCanceledException) { }
+
+    // Stop capture
     try
     {
         await capture.StopAsync(CancellationToken.None);
@@ -96,6 +97,7 @@ try
         Logger.Warning($"Error stopping capture (Chrome may have already closed): {ex.Message}");
     }
 
+    // Final flush to ensure all captured data is saved
     var har = HarGenerator.Generate(capture.Requests);
     await HarGenerator.SaveAsync(har, options.OutputPath, CancellationToken.None);
 
@@ -105,4 +107,44 @@ catch (Exception ex)
 {
     Logger.Error($"Fatal error: {ex}");
     Environment.ExitCode = 1;
+}
+
+/// <summary>
+/// Periodically generates and saves the HAR file while capture is running.
+/// This ensures the HAR file is always up-to-date on disk, even if Chrome
+/// crashes or the process is killed unexpectedly.
+/// </summary>
+static async Task FlushLoopAsync(NetworkCapture capture, string outputPath,
+    int intervalSeconds, CancellationToken cancellationToken)
+{
+    Logger.Info($"Incremental HAR flush started (every {intervalSeconds}s to {outputPath})");
+    var lastCount = 0;
+
+    while (!cancellationToken.IsCancellationRequested)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            break;
+        }
+
+        var currentCount = capture.Requests.Count;
+        if (currentCount == lastCount)
+            continue; // No new requests, skip flush
+
+        try
+        {
+            var har = HarGenerator.Generate(capture.Requests);
+            await HarGenerator.SaveAsync(har, outputPath, CancellationToken.None);
+            Logger.Info($"Incremental flush: {currentCount} requests saved.");
+            lastCount = currentCount;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"Incremental flush failed: {ex.Message}");
+        }
+    }
 }
